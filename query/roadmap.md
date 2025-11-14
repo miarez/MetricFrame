@@ -2,6 +2,8 @@
 
 ### ✅ Must-haves (Core Table Ops)
 
+relocate(is_weekend, .after = date) # move to 3rd column
+
 - [x] Load data
   - [x] `read_csv()` via `Csv.readTableSync`
   - [x] `read_json()` (via `Json.readTableSync`, value = rows array)
