@@ -91,41 +91,107 @@ export class Table {
   }
 
   /**
-   * Draw group borders between blocks of the same dimension value.
+   * Draw a rectangular border around each contiguous block of rows that share
+   * the same value for dimKey.
+   *
+   * Examples:
+   *   dimKey = "source"     → big box around each source block (all rows, all measures)
+   *   dimKey = "is_weekend" → box starting at the is_weekend column and across measures
+   *
+   * You can call this multiple times for different dims; borders will layer.
    */
   applyGroupBorders(dimKey, { color = "#fff", width = "2px" } = {}) {
     if (!this._lastTableEl || !this._lastSortedRows) return;
     if (!this.dimensions.includes(dimKey)) return;
 
-    const dimIdx = this.dimensions.indexOf(dimKey);
     const tbody = this._lastTableEl.querySelector("tbody");
     if (!tbody) return;
 
     const rows = Array.from(tbody.querySelectorAll("tr"));
     if (!rows.length) return;
 
-    let prevVal = null;
+    let start = 0;
 
-    rows.forEach((tr) => {
-      const val = tr.dataset[dimKey];
-      if (prevVal !== null && val !== prevVal) {
-        // put a thick top border on this row to separate groups
-        Array.from(tr.children).forEach((cell) => {
-          cell.style.borderTop = `${width} solid ${color}`;
-        });
+    while (start < rows.length) {
+      const groupVal = rows[start].dataset[dimKey];
+      let end = start;
+
+      // extend until the dimension value changes
+      while (
+        end + 1 < rows.length &&
+        rows[end + 1].dataset[dimKey] === groupVal
+      ) {
+        end++;
       }
-      prevVal = val;
-    });
-  }
 
+      // ----- find the dimension cell in the first row of this block -----
+      const firstRow = rows[start];
+      const firstDimCell = firstRow.querySelector(
+        `td.dim[data-dim-key="${dimKey}"]`
+      );
+
+      if (!firstDimCell) {
+        // no explicit dim cell in this row for this key → skip this block
+        start = end + 1;
+        continue;
+      }
+
+      const dimColIndex = firstDimCell.cellIndex; // visual column index
+
+      // ----- TOP border on first row, from dim column to the end -----
+      const firstCells = Array.from(firstRow.cells);
+      for (let c = dimColIndex; c < firstCells.length; c++) {
+        firstCells[c].style.borderTop = `${width} solid ${color}`;
+      }
+
+      // ----- BOTTOM border on last row, from dim column to the end -----
+      const lastRow = rows[end];
+      const lastCells = Array.from(lastRow.cells);
+      // In case row-spans before the dim column changed indices,
+      // clamp the start index safely.
+      const bottomStart = Math.min(dimColIndex, lastCells.length - 1);
+      for (let c = bottomStart; c < lastCells.length; c++) {
+        lastCells[c].style.borderBottom = `${width} solid ${color}`;
+      }
+
+      // Also ensure the dim cell itself has a bottom border (important
+      // when it row-spans over multiple rows, like "source").
+      firstDimCell.style.borderBottom = `${width} solid ${color}`;
+
+      // ----- LEFT border on every dim cell for this dimension in the block -----
+      // For row-spanned dims, this will just hit the one anchor cell.
+      // For non-spanned dims (like is_weekend), it will hit each row’s dim cell.
+      for (let r = start; r <= end; r++) {
+        const dimCell = rows[r].querySelector(
+          `td.dim[data-dim-key="${dimKey}"]`
+        );
+        if (dimCell) {
+          dimCell.style.borderLeft = `${width} solid ${color}`;
+        }
+      }
+
+      // ----- RIGHT border on the last cell of every row in the block -----
+      for (let r = start; r <= end; r++) {
+        const rowCells = Array.from(rows[r].cells);
+        if (!rowCells.length) continue;
+        const rightCell = rowCells[rowCells.length - 1];
+        rightCell.style.borderRight = `${width} solid ${color}`;
+      }
+
+      // move to next block
+      start = end + 1;
+    }
+  }
   clearGroupBorders() {
     if (!this._lastTableEl) return;
-    const tds = this._lastTableEl.querySelectorAll("td, th");
-    tds.forEach((cell) => {
+    const cells = this._lastTableEl.querySelectorAll("td, th");
+    cells.forEach((cell) => {
       cell.style.borderTop = "";
+      cell.style.borderBottom = "";
+      cell.style.borderLeft = "";
+      cell.style.borderRight = "";
     });
   }
-
   // ---------- INTERNAL: schema / roles ----------
 
   _initSchema({ facetMaxCard, maxDimensions }) {
@@ -245,6 +311,7 @@ export class Table {
           td.textContent = rowObj[dimKey];
           td.rowSpan = span;
           td.classList.add("dim");
+          td.dataset.dimKey = dimKey;
           tr.appendChild(td);
         }
       });

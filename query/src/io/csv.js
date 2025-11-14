@@ -1,4 +1,4 @@
-import * as fs from "node:fs"; // ESM-friendly Node FS
+// import * as fs from "node:fs"; // ESM-friendly Node FS
 
 // --- file: src/io/csv.js ---
 // CSV IO + Utilities (Node + browser-friendly)
@@ -70,38 +70,38 @@ export class Csv {
     return head + "\n" + body;
   }
 
-  static async readFile(path) {
-    if (typeof window === "undefined") {
-      const fs = await import("fs");
-      return fs.readFileSync(path, "utf8");
-    } else {
-      throw new Error("Csv.readFile is Node-only in this build");
-    }
-  }
+  // static async readFile(path) {
+  //   if (typeof window === "undefined") {
+  //     const fs = await import("fs");
+  //     return fs.readFileSync(path, "utf8");
+  //   } else {
+  //     throw new Error("Csv.readFile is Node-only in this build");
+  //   }
+  // }
 
-  static async writeFile(path, rows, opts = {}) {
-    if (typeof window === "undefined") {
-      const fs = await import("fs");
-      const csv = Array.isArray(rows)
-        ? Csv.stringify(rows, opts)
-        : String(rows);
-      fs.writeFileSync(path, csv, "utf8");
-      return path;
-    } else {
-      throw new Error("Csv.writeFile is Node-only in this build");
-    }
-  }
+  // static async writeFile(path, rows, opts = {}) {
+  //   if (typeof window === "undefined") {
+  //     const fs = await import("fs");
+  //     const csv = Array.isArray(rows)
+  //       ? Csv.stringify(rows, opts)
+  //       : String(rows);
+  //     fs.writeFileSync(path, csv, "utf8");
+  //     return path;
+  //   } else {
+  //     throw new Error("Csv.writeFile is Node-only in this build");
+  //   }
+  // }
 
-  // ADD near other methods
-  static readFileSync(path, encoding = "utf8") {
-    if (typeof window !== "undefined")
-      throw new Error("Csv.readFileSync is Node-only");
-    return fs.readFileSync(path, encoding);
-  }
+  // // ADD near other methods
+  // static readFileSync(path, encoding = "utf8") {
+  //   if (typeof window !== "undefined")
+  //     throw new Error("Csv.readFileSync is Node-only");
+  //   return fs.readFileSync(path, encoding);
+  // }
 
-  // OPTIONAL: parse directly from file (sync)
-  static readTableSync(path, opts = {}) {
-    const text = Csv.readFileSync(path, opts.encoding || "utf8");
-    return Csv.parse(text, opts);
-  }
+  // // OPTIONAL: parse directly from file (sync)
+  // static readTableSync(path, opts = {}) {
+  //   const text = Csv.readFileSync(path, opts.encoding || "utf8");
+  //   return Csv.parse(text, opts);
+  // }
 }

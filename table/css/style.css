@@ -40,7 +40,7 @@ td.dim {
 }
 
 tbody tr:nth-child(even) td {
-  background: #151515;
+  /* background: #151515; */
 }
 
 /* Faded cells/rows when a column or dimension is focused */

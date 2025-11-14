@@ -58,23 +58,28 @@ const {
 import { Scalar } from "./src/core/Functions/Scalar.js";
 
 const { df, info } = mf
-  .read_csv("./data/df1.csv", "utf8")
-  .select("month", "country", "revenue", "profit")
-  .group("month")
-  .filter(gt("revenue", 1000))
-  .filter((r) => Scalar.gt(r.revenue, 1000))
-  .calc({
-    margin: sub("revenue", "profit"),
-    date: today(),
-  })
+  .read_csv("./data/df2.csv", "utf8")
+  .select(
+    "day",
+    "source",
+    "is_weekend",
+    "user_type",
+    "is_churned",
+    "imp",
+    "rev",
+    "cost"
+  )
+  .group("day", "source", "is_weekend", "user_type", "is_churned")
   .agg({
-    total_revenue: sum("revenue"),
-    profit: mean("profit"),
-    margin: quantile(0.5, "margin"),
-    n: count(),
+    imp: sum("imp"),
+    rev: sum("rev"),
+    cost: sum("cost"),
   })
-  .order("month", "-country")
-  .limit(5000)
+  .pivot({
+    rows: ["source", "day", "is_weekend"],
+    columns: ["user_type", "is_churned"],
+    measures: ["imp", "rev", "cost"],
+  })
   .build();
 
 console.log("Processed DataFrame:");

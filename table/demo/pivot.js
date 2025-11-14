@@ -16,5 +16,13 @@ document.addEventListener("DOMContentLoaded", () => {
     .data(df, info)
     .heatmapByDimension("source", "global")
     .selectionMode("value")
+    // .groupBorders("source", {
+    //   color: "#ffffff",
+    //   width: "3px",
+    // })
+    // .groupBorders("is_weekend", {
+    //   color: "#ffffff",
+    //   width: "3px",
+    // })
     .build();
 });
