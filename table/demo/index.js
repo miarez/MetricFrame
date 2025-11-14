@@ -1,8 +1,8 @@
 // index.js
-import { loadCsv } from "./utils/csv.js";
-import { TableBuilder } from "./src/TableBuilder.js";
+import { loadCsv } from "../utils/csv.js";
+import { TableBuilder } from "../src/TableBuilder.js";
 
-const CSV_PATH = "./data/data3.csv";
+const CSV_PATH = "../data/data3.csv";
 
 document.addEventListener("DOMContentLoaded", () => {
   loadCsv(CSV_PATH)

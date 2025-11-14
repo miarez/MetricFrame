@@ -78,7 +78,7 @@ const { df, info } = mf
   .build();
 
 console.log("Processed DataFrame:");
-console.table(df);
+console.log(df);
 
 console.log("Profile:");
 console.log(info);

@@ -163,3 +163,23 @@ mf
   .limit(5000)
   .build();
 ```
+
+```
+COLUMN FUNCTION
+   ├── (1) Row-wise column function   (calc)
+   │         f: row -> value
+   │         preserves row count
+   │
+   ├── (2) Column-wise reduction      (agg)
+   │         f: column[] -> value
+   │         collapses row count
+   │
+   ├── (3) Window / transform         (window)
+   │         f: column[] -> column[]
+   │         preserves row count
+   │
+   └── (4) Frame-level reshaping      (frame ops)
+             f: dataframe -> dataframe
+             changes structure
+
+```
