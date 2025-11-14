@@ -1,21 +1,18 @@
 // src/TableBuilder.js
-import { TableCore } from "./TableCore.js";
-import { TableFormatter } from "./TableFormatter.js";
+
+import { Table } from "./Table.js";
 
 export class TableBuilder {
   constructor() {
-    this._rows = null;
     this._containerId = "table";
-    this._facetMaxCard = 12;
-    this._maxDimensions = 4;
+    this._rows = [];
+    this._info = null;
 
-    // list of (formatter) => void
-    this._formatActions = [];
-  }
-
-  rows(rows) {
-    this._rows = rows;
-    return this;
+    // formatting config
+    this._heatmapMode = null; // "global" | "perColumn" | "byDimension"
+    this._heatmapDimKey = null;
+    this._groupBorders = []; // [{ dimKey, options }]
+    this._selectionMode = "value"; // "value" | "grain"
   }
 
   container(id) {
@@ -23,99 +20,89 @@ export class TableBuilder {
     return this;
   }
 
-  facetMaxCard(n) {
-    this._facetMaxCard = n;
-    return this;
-  }
-
-  maxDimensions(n) {
-    this._maxDimensions = n;
-    return this;
-  }
-
-  // ----- formatting options -----
-
-  heatmapGlobal() {
-    this._formatActions.push((fmt) => fmt.applyHeatmapGlobal());
-    return this;
-  }
-
-  heatmapPerColumn() {
-    this._formatActions.push((fmt) => fmt.applyHeatmapPerColumn());
+  // src/TableBuilder.js
+  selectionMode(mode) {
+    // mode: "value" | "grain"
+    if (mode === "value" || mode === "grain") {
+      this._selectionMode = mode;
+    }
     return this;
   }
 
   /**
-   * @param {string} dimKey
-   * @param {"global"|"perColumn"} mode
+   * Primary API for your language-style integration.
+   * df: array of row objects
+   * info: profile / schema (may include rowDims, colDims, columnIndex, etc.)
    */
-  heatmapByDimension(dimKey, mode = "global") {
-    this._formatActions.push((fmt) =>
-      fmt.applyHeatmapByDimension(dimKey, { mode })
-    );
-    return this;
-  }
-
-  // ----- formatting options -----
-
-  heatmapGlobal() {
-    this._formatActions.push((fmt) => fmt.applyHeatmapGlobal());
-    return this;
-  }
-
-  heatmapPerColumn() {
-    this._formatActions.push((fmt) => fmt.applyHeatmapPerColumn());
-    return this;
-  }
-
-  heatmapByDimension(dimKey, mode = "global") {
-    this._formatActions.push((fmt) =>
-      fmt.applyHeatmapByDimension(dimKey, { mode })
-    );
+  data(df, info = null) {
+    this._rows = df || [];
+    this._info = info || null;
     return this;
   }
 
   /**
-   * Draw a border around each group of identical dimKey values.
-   * e.g. .groupBorders("source")
+   * Backwards-compatible: if someone only passes rows,
+   * we infer everything from scratch.
    */
-  groupBorders(dimKey, opts = {}) {
-    this._formatActions.push((fmt) =>
-      fmt.applyGroupBordersByDimension(dimKey, opts)
-    );
+  rows(rows) {
+    this._rows = rows || [];
+    this._info = null;
     return this;
   }
 
-  // ----- build -----
+  // ---------- Formatting hooks (for regular table demos) ----------
+
+  heatmapGlobal() {
+    this._heatmapMode = "global";
+    this._heatmapDimKey = null;
+    return this;
+  }
+
+  heatmapPerColumn() {
+    this._heatmapMode = "perColumn";
+    this._heatmapDimKey = null;
+    return this;
+  }
+
+  /**
+   * mode: "global" | "perColumn"
+   */
+  heatmapByDimension(dimKey, mode = "global") {
+    this._heatmapMode = "byDimension";
+    this._heatmapDimKey = dimKey;
+    this._heatmapDimMode = mode;
+    return this;
+  }
+
+  groupBorders(dimKey, options = {}) {
+    this._groupBorders.push({ dimKey, options });
+    return this;
+  }
 
   build() {
-    if (!this._rows) {
-      throw new Error("TableBuilder: rows() must be provided before build().");
-    }
-
-    const core = new TableCore(this._rows, {
+    console.log("selection_mode", this._selectionMode);
+    const table = new Table(this._rows, {
       containerId: this._containerId,
-      facetMaxCard: this._facetMaxCard,
-      maxDimensions: this._maxDimensions,
+      info: this._info,
+      selectionMode: this._selectionMode,
     });
 
-    const formatter = new TableFormatter(core);
+    // Apply heatmap formatting if configured
+    if (this._heatmapMode === "global") {
+      table.applyHeatmapGlobal();
+    } else if (this._heatmapMode === "perColumn") {
+      table.applyHeatmapPerColumn();
+    } else if (this._heatmapMode === "byDimension" && this._heatmapDimKey) {
+      table.applyHeatmapByDimension(this._heatmapDimKey, {
+        mode: this._heatmapDimMode || "global",
+      });
+    }
 
-    // apply any queued formatting actions
-    this._formatActions.forEach((fn) => fn(formatter));
+    // Apply group borders (row grouping) if any
+    for (const { dimKey, options } of this._groupBorders) {
+      table.applyGroupBorders(dimKey, options);
+    }
 
-    // return a façade that feels like your old Table API
-    return {
-      core,
-      formatter,
-      applyHeatmapGlobal: () => formatter.applyHeatmapGlobal(),
-      applyHeatmapPerColumn: () => formatter.applyHeatmapPerColumn(),
-      applyHeatmapByDimension: (dimKey, opts) =>
-        formatter.applyHeatmapByDimension(dimKey, opts),
-      clearHeatmap: () => formatter.clearHeatmap(),
-      applyGroupBordersByDimension: (dimKey, opts) =>
-        formatter.applyGroupBordersByDimension(dimKey, opts),
-      clearGroupBorders: () => formatter.clearGroupBorders(),
-    };
+    return table;
   }
 }

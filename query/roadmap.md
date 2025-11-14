@@ -157,3 +157,66 @@ const { df, info } = mf
   .limit(5000)
   .build();
 ```
+
+## Once we pivot...
+
+```js
+const info = {
+  // already have these
+  nRows: df.length,
+  nCols: Object.keys(df[0] || {}).length,
+  types: {
+    traffic_source_name: "cat",
+    stats_date: "date",
+    is_weekend: "bool",
+
+    "Landing Impressions|DUPLICATE|0": "num",
+    "Landing Impressions|DUPLICATE|1": "num",
+    "Landing Impressions|FLOW|0": "num",
+    "Landing Impressions|FLOW|1": "num",
+    "Total Revenue|DUPLICATE|0": "num",
+    // …etc for all measure columns
+  },
+  cardinality: {
+    traffic_source_name: 3,
+    stats_date: 14,
+    is_weekend: 2,
+    // each leaf measure column has its own card
+  },
+
+  // NEW: semantic roles
+  rowDims: ["traffic_source_name", "stats_date", "is_weekend"],
+  colDims: ["Experiment Type", "Is Peh Dup"],
+  measures: ["Landing Impressions", "Total Revenue", "Cost (MB)"],
+
+  // NEW: explicit multi-column index for headers
+  columnIndex: [
+    {
+      key: "Landing Impressions|DUPLICATE|0",
+      path: ["Landing Impressions", "DUPLICATE", 0],
+      dims: { experiment_type: "DUPLICATE", is_peh_dup: 0 },
+      measure: "Landing Impressions",
+    },
+    {
+      key: "Landing Impressions|DUPLICATE|1",
+      path: ["Landing Impressions", "DUPLICATE", 1],
+      dims: { experiment_type: "DUPLICATE", is_peh_dup: 1 },
+      measure: "Landing Impressions",
+    },
+    {
+      key: "Landing Impressions|FLOW|0",
+      path: ["Landing Impressions", "FLOW", 0],
+      dims: { experiment_type: "FLOW", is_peh_dup: 0 },
+      measure: "Landing Impressions",
+    },
+    {
+      key: "Landing Impressions|FLOW|1",
+      path: ["Landing Impressions", "FLOW", 1],
+      dims: { experiment_type: "FLOW", is_peh_dup: 1 },
+      measure: "Landing Impressions",
+    },
+
+    // …repeat for Total Revenue, Cost (MB), etc
+  ],
+};
+```
