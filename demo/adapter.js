@@ -1,11 +1,3 @@
-// /demo/index.js
-
-import { MetricFrame as mf } from "../query/src/MetricFrame.js";
-import { sum } from "../query/src/core/Builders/Aggregation.js";
-import { Table } from "../table/src/Table.js";
-// If you want Column functions later, you can also import:
-// import { Column } from "../src/core/Builders/Column.js";
-
 export function adaptMetricFrameToTableInfo(df, mfInfo = {}) {
   // 0) Already table-shaped? Just use it.
   if (Array.isArray(mfInfo.columnIndex) && mfInfo.columnIndex.length) {
@@ -96,45 +88,3 @@ export function adaptMetricFrameToTableInfo(df, mfInfo = {}) {
     columnIndex,
   };
 }
-
-document.addEventListener("DOMContentLoaded", async () => {
-  const pipeline = await mf.fetch_csv("./data/raw2.csv");
-
-  const { df, info: mfInfo } = pipeline
-    .group("source", "day", "user_type")
-    .agg({
-      imp: sum("imp"),
-      rev: sum("rev"),
-      cost: sum("cost"),
-    })
-    .order("source", "day")
-    .pivot({
-      rows: ["source", "day"],
-      columns: ["user_type"],
-      measures: ["imp", "rev", "cost"],
-    })
-    .build();
-
-  const info = adaptMetricFrameToTableInfo(df, mfInfo);
-
-  console.log(df);
-
-  new Table()
-    .container("table")
-    .selectionMode("grain")
-    .data(df, info)
-    .heatmapByDimension("source", "perColumn")
-    // .heatmapGlobal()
-    .groupBorders("source", {
-      color: "#ffffff",
-      width: "3px",
-    })
-    .build();
-});
-
-// .heatmapByDimension("source", "perColumn")
-
-// .groupBorders("is_weekend", {
-//   color: "#ffffff",
-//   width: "3px",
-// })
