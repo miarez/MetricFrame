@@ -60,14 +60,14 @@ relocate(is_weekend, .after = date) # move to 3rd column
   - [ ] `distinct("col", ...)`
   - [ ] `dedupeBy("keyCol", "orderCol")`
 - [ ] Joins
-  - [ ] `leftJoin(other, on)`
-  - [ ] `innerJoin(other, on)`
-  - [ ] `rightJoin(other, on)`
-  - [ ] `fullJoin(other, on)`
-  - [ ] `semiJoin` / `antiJoin`
+  - [x] `leftJoin(other, on)`
+  - [x] `innerJoin(other, on)`
+  - [x] `rightJoin(other, on)`
+  - [x] `fullJoin(other, on)`
+  - [x] `semiJoin` / `antiJoin`
 - [ ] Reshaping
-  - [ ] `pivot_wider({ namesFrom, valuesFrom })`
-  - [ ] `pivot_longer({ cols, namesTo, valuesTo })`
+  - [x] `pivot_wider({ namesFrom, valuesFrom })`
+  - [x] `pivot_longer({ cols, namesTo, valuesTo })`
 - [ ] Set operations
   - [ ] `union(other)`
   - [ ] `intersect(other)`
@@ -220,3 +220,43 @@ const info = {
   ],
 };
 ```
+
+## Future Refactor Notes
+
+### 1. Pivot default aggregation is opinionated
+
+`pivot()` currently defaults to `agg: "sum"` whenever duplicates exist.
+This is safe but non-neutral. Later, consider:
+
+- strict reshape mode (error on duplicates)
+- per-measure default aggregation
+- or a global default agg override.
+
+### 2. Role inference (dims vs measures) is too automatic
+
+Non-pivot `build()` treats:
+
+- numeric → measures
+- everything else → dims
+
+This is convenient for dashboards, but not general-purpose.
+Later, consider:
+
+- explicit `as_dim()` / `as_measure()` overrides
+- or removing automatic role inference from `build()`.
+
+### 3. True `undoPivot()` (inverse pivot) missing
+
+`unpivot()` is a generic pivot_longer, not a true inverse of `pivot()`.
+It ignores `pivotSpec` and `columnIndex` and only melts explicit cols.
+
+Later, consider adding a real `undoPivot()` that reconstructs the exact
+pre-pivot long shape by using:
+
+- `pivotSpec.rows` (row dims)
+- `pivotSpec.columns` (column dims)
+- `pivotSpec.measures` (measure fields)
+- `info.columnIndex.path` (actual dim-value paths)
+
+This would let any wide table produced by `pivot()` be perfectly
+reversible, regardless of measure count or column depth.

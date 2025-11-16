@@ -66,34 +66,24 @@ const {
 } = Column;
 
 document.addEventListener("DOMContentLoaded", async () => {
-  const pipeline = await q.fetch_csv("./data/raw2.csv");
+  const left = await q.fetch_csv("./data/left.csv");
+  const right = await q.fetch_csv("./data/right.csv");
 
-  const { df, info } = pipeline
-    .group("source", "day", "user_type")
-    .agg({
-      imp: sum("imp"),
-      rev: sum("rev"),
-      cost: sum("cost"),
-    })
-    .order("source", "day")
-    // .pivot({
-    //   rows: ["source", "day"],
-    //   columns: ["user_type"],
-    //   measures: ["imp", "rev", "cost"],
-    // })
-    .build();
+  console.log("Inner:");
+  new Table(left.innerJoin(right, "id").build()).build();
 
-  console.log(df);
+  // const pipeline = await q.fetch_csv("./data/for-unpivot.csv");
 
-  new Table()
-    .container("table")
-    .selectionMode("grain")
-    .data(df, info)
-    .heatmapByDimension("source", "perColumn")
-    // .heatmapGlobal()
-    .groupBorders("source", {
-      color: "#ffffff",
-      width: "3px",
-    })
-    .build();
+  // new Table(
+  //   pipeline
+  //     .unpivot({
+  //       cols: ["imp", "rev", "cost"],
+  //       namesTo: "metric",
+  //       valuesTo: "value",
+  //     })
+  //     .build()
+  // )
+  //   .selectionMode("grain")
+  //   .heatmapByDimension("source", "perColumn")
+  //   .build();
 });

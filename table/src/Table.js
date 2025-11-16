@@ -1,10 +1,10 @@
 import { Core } from "./Core.js";
 
 export class Table {
-  constructor() {
+  constructor(queryObject) {
     this._containerId = "table";
-    this._rows = [];
-    this._info = null;
+    this._rows = queryObject.df || [];
+    this._info = queryObject.info || null;
 
     // formatting config
     this._heatmapMode = null; // "global" | "perColumn" | "byDimension"
@@ -32,9 +32,9 @@ export class Table {
    * df: array of row objects
    * info: profile / schema (may include rowDims, colDims, columnIndex, etc.)
    */
-  data(df, info = null) {
-    this._rows = df || [];
-    this._info = info || null;
+  data(queryObject) {
+    this._rows = queryObject.df || [];
+    this._info = queryObject.info || null;
     return this;
   }
 

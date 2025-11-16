@@ -1,0 +1,6 @@
+id,day,val_b,tag
+2,2025-01-01,200,ok
+3,2025-01-01,300,ok
+4,2025-01-02,400,duplicate-A
+4,2025-01-02,401,duplicate-B
+5,2025-01-02,500,missing-on-left

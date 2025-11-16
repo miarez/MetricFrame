@@ -13,6 +13,80 @@ class Pipeline {
     return rows.map((r) => ({ ...r }));
   }
 
+  // --- AGGREGATION HELPERS ------------------------------------
+
+  static _aggSum(values) {
+    let acc = 0;
+    let seen = false;
+    for (const v of values) {
+      if (v == null) continue;
+      const n = Number(v);
+      if (Number.isNaN(n)) continue;
+      acc += n;
+      seen = true;
+    }
+    return seen ? acc : null;
+  }
+
+  static _aggMean(values) {
+    let acc = 0;
+    let count = 0;
+    for (const v of values) {
+      if (v == null) continue;
+      const n = Number(v);
+      if (Number.isNaN(n)) continue;
+      acc += n;
+      count++;
+    }
+    return count ? acc / count : null;
+  }
+
+  static _aggMin(values) {
+    let res = null;
+    for (const v of values) {
+      if (v == null) continue;
+      const n = Number(v);
+      if (Number.isNaN(n)) continue;
+      if (res === null || n < res) res = n;
+    }
+    return res;
+  }
+
+  static _aggMax(values) {
+    let res = null;
+    for (const v of values) {
+      if (v == null) continue;
+      const n = Number(v);
+      if (Number.isNaN(n)) continue;
+      if (res === null || n > res) res = n;
+    }
+    return res;
+  }
+
+  static _aggLast(values) {
+    for (let i = values.length - 1; i >= 0; i--) {
+      const v = values[i];
+      if (v != null) return v;
+    }
+    return null;
+  }
+
+  static _resolveAggFn(token) {
+    if (typeof token === "function") return token;
+
+    if (typeof token === "string") {
+      const key = token.toLowerCase();
+      if (key === "sum") return Pipeline._aggSum;
+      if (key === "mean" || key === "avg") return Pipeline._aggMean;
+      if (key === "min") return Pipeline._aggMin;
+      if (key === "max") return Pipeline._aggMax;
+      if (key === "last") return Pipeline._aggLast;
+    }
+
+    // Fallback default if something weird was passed
+    return Pipeline._aggSum;
+  }
+
   // ---- STATIC CONSTRUCTORS ------------------------------------
 
   static async fetch_csv(url, opts = {}) {
@@ -127,6 +201,8 @@ class Pipeline {
     }
 
     this._rows = rows;
+    // schema changed → types stale
+    this._types = null;
     return this;
   }
 
@@ -139,7 +215,7 @@ class Pipeline {
 
   agg(spec) {
     if (!this._groupKeys || !this._groupKeys.length)
-      throw new Error("agg() requires groupBy() first");
+      throw new Error("agg() requires group() first");
 
     const gmap = new Map();
     for (const r of this._rows) {
@@ -182,6 +258,8 @@ class Pipeline {
 
     this._rows = out;
     this._groupKeys = null;
+    // schema changed → types stale
+    this._types = null;
     return this;
   }
 
@@ -215,20 +293,254 @@ class Pipeline {
     return this;
   }
 
+  // ---- JOIN HELPERS ------------------------------------------
+
+  _getRowsFrom(other) {
+    if (other instanceof Pipeline) return other._rows;
+    if (Array.isArray(other)) return other;
+    throw new Error("join() 'other' must be a Pipeline or array of rows");
+  }
+
+  _normalizeJoinOn(on) {
+    if (!on) throw new Error("join() requires 'on' keys");
+
+    let pairs = [];
+
+    if (typeof on === "string") {
+      pairs = [[on, on]];
+    } else if (Array.isArray(on)) {
+      pairs = on.map((k) => [k, k]);
+    } else if (on && typeof on === "object") {
+      pairs = Object.entries(on); // [leftKey, rightKey]
+    } else {
+      throw new Error("join() 'on' must be string, array, or object map");
+    }
+
+    const leftKeys = pairs.map(([l]) => l);
+    const rightKeys = pairs.map(([, r]) => r);
+    return { pairs, leftKeys, rightKeys };
+  }
+
+  _makeKey(row, keys) {
+    return JSON.stringify(keys.map((k) => row[k]));
+  }
+
+  _combineRows(leftRow, rightRow, leftCols, rightOnlyCols, joinPairs) {
+    const out = {};
+
+    // 1) copy all left columns (even if undefined when leftRow is null)
+    for (const c of leftCols) {
+      out[c] = leftRow ? leftRow[c] : undefined;
+    }
+
+    // 2) ensure join key columns are populated (from right if left is missing)
+    if (rightRow) {
+      for (const [lKey, rKey] of joinPairs) {
+        if (out[lKey] === undefined) {
+          out[lKey] = rightRow[rKey];
+        }
+      }
+    }
+
+    // 3) copy right-only columns
+    if (rightRow) {
+      for (const c of rightOnlyCols) {
+        out[c] = rightRow[c];
+      }
+    } else {
+      for (const c of rightOnlyCols) {
+        out[c] = undefined;
+      }
+    }
+
+    return out;
+  }
+
+  _join(other, on, type) {
+    const leftRows = this._rows;
+    const rightRows = this._getRowsFrom(other);
+
+    if (!leftRows.length && !rightRows.length) {
+      this._rows = [];
+      this._pivotSpec = null;
+      this._types = null;
+      return this;
+    }
+
+    const leftCols = leftRows.length ? Object.keys(leftRows[0]) : [];
+    const rightCols = rightRows.length ? Object.keys(rightRows[0]) : [];
+
+    const { pairs, leftKeys, rightKeys } = this._normalizeJoinOn(on);
+
+    // right-only, non-key columns (we'll append these)
+    const rightOnlyCols = rightCols.filter(
+      (c) => !rightKeys.includes(c) && !leftCols.includes(c)
+    );
+
+    // build indexes
+    const rightIndex = new Map();
+    for (const r of rightRows) {
+      const key = this._makeKey(r, rightKeys);
+      let arr = rightIndex.get(key);
+      if (!arr) {
+        arr = [];
+        rightIndex.set(key, arr);
+      }
+      arr.push(r);
+    }
+
+    const leftIndex = new Map();
+    for (const l of leftRows) {
+      const key = this._makeKey(l, leftKeys);
+      let arr = leftIndex.get(key);
+      if (!arr) {
+        arr = [];
+        leftIndex.set(key, arr);
+      }
+      arr.push(l);
+    }
+
+    const out = [];
+
+    const combine = (l, r) =>
+      this._combineRows(l, r, leftCols, rightOnlyCols, pairs);
+
+    if (type === "inner") {
+      for (const l of leftRows) {
+        const key = this._makeKey(l, leftKeys);
+        const matches = rightIndex.get(key);
+        if (!matches || !matches.length) continue;
+        for (const r of matches) {
+          out.push(combine(l, r));
+        }
+      }
+    } else if (type === "left") {
+      for (const l of leftRows) {
+        const key = this._makeKey(l, leftKeys);
+        const matches = rightIndex.get(key);
+        if (matches && matches.length) {
+          for (const r of matches) {
+            out.push(combine(l, r));
+          }
+        } else {
+          out.push(combine(l, null));
+        }
+      }
+    } else if (type === "right") {
+      for (const r of rightRows) {
+        const key = this._makeKey(r, rightKeys);
+        const matches = leftIndex.get(key);
+        if (matches && matches.length) {
+          for (const l of matches) {
+            out.push(combine(l, r));
+          }
+        } else {
+          out.push(combine(null, r));
+        }
+      }
+    } else if (type === "full") {
+      const seenRightKeys = new Set();
+
+      // left side + matches / left-only
+      for (const l of leftRows) {
+        const key = this._makeKey(l, leftKeys);
+        const matches = rightIndex.get(key);
+        if (matches && matches.length) {
+          for (const r of matches) {
+            out.push(combine(l, r));
+            seenRightKeys.add(this._makeKey(r, rightKeys));
+          }
+        } else {
+          out.push(combine(l, null));
+        }
+      }
+
+      // right-only
+      for (const r of rightRows) {
+        const key = this._makeKey(r, rightKeys);
+        if (seenRightKeys.has(key)) continue;
+        if (!leftIndex.get(key)) {
+          out.push(combine(null, r));
+        }
+      }
+    } else if (type === "semi") {
+      // left-semi: only left rows that have a match in right, no right columns
+      for (const l of leftRows) {
+        const key = this._makeKey(l, leftKeys);
+        const matches = rightIndex.get(key);
+        if (matches && matches.length) {
+          out.push({ ...l });
+        }
+      }
+    } else if (type === "anti") {
+      // left-anti: only left rows with no match in right
+      for (const l of leftRows) {
+        const key = this._makeKey(l, leftKeys);
+        const matches = rightIndex.get(key);
+        if (!matches || !matches.length) {
+          out.push({ ...l });
+        }
+      }
+    } else {
+      throw new Error(`Unknown join type: ${type}`);
+    }
+
+    this._rows = out;
+    this._pivotSpec = null;
+    this._types = null;
+
+    return this;
+  }
+
+  leftJoin(other, on) {
+    return this._join(other, on, "left");
+  }
+
+  innerJoin(other, on) {
+    return this._join(other, on, "inner");
+  }
+
+  rightJoin(other, on) {
+    return this._join(other, on, "right");
+  }
+
+  fullJoin(other, on) {
+    return this._join(other, on, "full");
+  }
+
+  semiJoin(other, on) {
+    return this._join(other, on, "semi");
+  }
+
+  antiJoin(other, on) {
+    return this._join(other, on, "anti");
+  }
+
   // ---- PIVOT BUILDER API -------------------------------------
 
-  pivot({ rows = [], columns = [], measures = [] } = {}) {
+  /**
+   * pivot({ rows, columns, measures, agg })
+   * - rows: row dimension fields
+   * - columns: column dimension fields
+   * - measures: value fields to pivot
+   * - agg: optional aggregation spec when multiple rows per cell
+   *   - function(values, context) => value
+   *   - string: "sum" | "mean" | "avg" | "min" | "max" | "last"
+   *   - object: { measureName: fnOrString, "*": fnOrString }
+   */
+  pivot({ rows = [], columns = [], measures = [], agg = null } = {}) {
     this._pivotSpec = {
       rows: rows.flat(),
       columns: columns.flat(),
       measures: measures.flat(),
+      agg,
     };
     return this;
   }
 
   pivotRows(...fields) {
     if (!this._pivotSpec) {
-      this._pivotSpec = { rows: [], columns: [], measures: [] };
+      this._pivotSpec = { rows: [], columns: [], measures: [], agg: null };
     }
     this._pivotSpec.rows = fields.flat();
     return this;
@@ -236,7 +548,7 @@ class Pipeline {
 
   pivotCols(...fields) {
     if (!this._pivotSpec) {
-      this._pivotSpec = { rows: [], columns: [], measures: [] };
+      this._pivotSpec = { rows: [], columns: [], measures: [], agg: null };
     }
     this._pivotSpec.columns = fields.flat();
     return this;
@@ -244,10 +556,40 @@ class Pipeline {
 
   pivotMeasures(...fields) {
     if (!this._pivotSpec) {
-      this._pivotSpec = { rows: [], columns: [], measures: [] };
+      this._pivotSpec = { rows: [], columns: [], measures: [], agg: null };
     }
     this._pivotSpec.measures = fields.flat();
     return this;
+  }
+
+  // --- INTERNAL: normalize pivot agg spec ---------------------
+
+  _resolvePivotAggFor(measureName) {
+    const spec = this._pivotSpec || {};
+    const agg = spec.agg;
+
+    if (!agg) {
+      // default: sum
+      return Pipeline._aggSum;
+    }
+
+    // Single function or string → apply to all measures
+    if (typeof agg === "function" || typeof agg === "string") {
+      return Pipeline._resolveAggFn(agg);
+    }
+
+    // Object map: per-measure or wildcard
+    if (agg && typeof agg === "object") {
+      const token =
+        agg[measureName] !== undefined
+          ? agg[measureName]
+          : agg["*"] !== undefined
+          ? agg["*"]
+          : "sum";
+      return Pipeline._resolveAggFn(token);
+    }
+
+    return Pipeline._aggSum;
   }
 
   // --- INTERNAL: perform wide pivot and build columnIndex ------
@@ -268,20 +610,21 @@ class Pipeline {
     const colDims = spec.columns || [];
     const measuresSpec = spec.measures || [];
 
-    const outMap = new Map(); // key: JSON(rowDims values) -> row object
-    const colIndexObj = {}; // syntheticColId -> { measure, dims, path }
+    const outRowMap = new Map(); // rowKey -> outRow
+    const cellMap = new Map(); // cellKey -> { rowKey, colId, measure, dims, values: [] }
 
     for (const r of rows) {
       // 1) find or create the pivoted row keyed by rowDims
       const keyValues = rowDims.map((k) => r[k]);
       const rowKey = JSON.stringify(keyValues);
-      let outRow = outMap.get(rowKey);
+
+      let outRow = outRowMap.get(rowKey);
       if (!outRow) {
         outRow = {};
         rowDims.forEach((k, i) => {
           outRow[k] = keyValues[i];
         });
-        outMap.set(rowKey, outRow);
+        outRowMap.set(rowKey, outRow);
       }
 
       // 2) column-dim values for this original row
@@ -297,28 +640,70 @@ class Pipeline {
             );
 
       for (const m of useMeasures) {
-        const path = [m, ...colDims.map((d) => String(r[d]))];
-        const colId = path.join("|"); // e.g. "imp|control|0"
-        outRow[colId] = r[m];
+        const dimPath = colDims.map((d) => String(r[d]));
+        const path = [...dimPath, m]; // dims first, measure last
+        const colId = path.join("|");
+        const cellKey = JSON.stringify([rowKey, colId, m]);
 
-        if (!colIndexObj[colId]) {
-          colIndexObj[colId] = {
+        let cell = cellMap.get(cellKey);
+        if (!cell) {
+          cell = {
+            rowKey,
+            colId,
             measure: m,
             dims: { ...dimVals },
-            path, // ["imp","control","0"]
+            path,
+            values: [],
           };
+          cellMap.set(cellKey, cell);
         }
+
+        cell.values.push(r[m]);
       }
     }
 
-    const wideRows = Array.from(outMap.values());
+    // 4) aggregate per cell and build final wide rows + columnIndex
+    const wideRows = Array.from(outRowMap.values());
+    const colIndexObj = {};
 
-    const columnIndex = Object.entries(colIndexObj).map(([key, meta]) => ({
+    for (const cell of cellMap.values()) {
+      const aggFn = this._resolvePivotAggFor(cell.measure);
+      const value = aggFn(cell.values, {
+        measure: cell.measure,
+        dims: cell.dims,
+        path: cell.path,
+      });
+
+      const outRow = outRowMap.get(cell.rowKey);
+      outRow[cell.colId] = value;
+
+      if (!colIndexObj[cell.colId]) {
+        colIndexObj[cell.colId] = {
+          measure: cell.measure,
+          dims: cell.dims,
+          path: cell.path,
+        };
+      }
+    }
+
+    let columnIndex = Object.entries(colIndexObj).map(([key, meta]) => ({
       key,
       path: meta.path,
       dims: meta.dims,
       measure: meta.measure,
     }));
+
+    // Ensure deterministic grouping: sort by path lexicographically
+    columnIndex.sort((a, b) => {
+      const len = Math.max(a.path.length, b.path.length);
+      for (let i = 0; i < len; i++) {
+        const av = a.path[i] ?? "";
+        const bv = b.path[i] ?? "";
+        if (av < bv) return -1;
+        if (av > bv) return 1;
+      }
+      return 0;
+    });
 
     const measures =
       measuresSpec.length > 0
@@ -328,6 +713,95 @@ class Pipeline {
     return { rows: wideRows, rowDims, colDims, measures, columnIndex };
   }
 
+  // ---- UNPIVOT / PIVOT_LONGER --------------------------------
+
+  /**
+   * unpivot({
+   *   cols,        // which columns to melt (names / regex tokens)
+   *   namesTo,     // name of the new "column name" field (default: "name")
+   *   valuesTo,    // name of the new "column value" field (default: "value")
+   *   dropMissing, // if true, skip null/undefined values
+   * })
+   */
+  unpivot({
+    cols = [],
+    namesTo = "name",
+    valuesTo = "value",
+    dropMissing = false,
+  } = {}) {
+    const rows = this._rows;
+    if (!rows.length) return this;
+
+    const allCols = Object.keys(rows[0]);
+
+    // --- resolve which columns to melt ------------------------
+    let valueCols;
+    if (!cols || cols.length === 0) {
+      // default: melt everything
+      valueCols = allCols.slice();
+    } else {
+      const tokens = cols.flat();
+      const set = new Set();
+
+      for (let token of tokens) {
+        // regex: direct
+        if (token instanceof RegExp) {
+          allCols.filter((c) => token.test(c)).forEach((c) => set.add(c));
+          continue;
+        }
+        // "regex:foo"
+        if (typeof token === "string" && token.startsWith("regex:")) {
+          const re = new RegExp(token.slice(6));
+          allCols.filter((c) => re.test(c)).forEach((c) => set.add(c));
+          continue;
+        }
+        // "^prefix" style
+        if (typeof token === "string" && token.startsWith("^")) {
+          const re = new RegExp(token);
+          allCols.filter((c) => re.test(c)).forEach((c) => set.add(c));
+          continue;
+        }
+
+        // plain column name
+        if (typeof token === "string") {
+          if (allCols.includes(token)) set.add(token);
+          continue;
+        }
+      }
+
+      valueCols = Array.from(set);
+    }
+
+    // id columns are everything else
+    const idCols = allCols.filter((c) => !valueCols.includes(c));
+
+    const out = [];
+
+    for (const r of rows) {
+      for (const vCol of valueCols) {
+        const v = r[vCol];
+        if (dropMissing && (v === null || v === undefined)) continue;
+
+        const o = {};
+
+        // carry id columns through
+        for (const id of idCols) o[id] = r[id];
+
+        // new name/value pair
+        o[namesTo] = vCol;
+        o[valuesTo] = v;
+
+        out.push(o);
+      }
+    }
+
+    this._rows = out;
+    this._pivotSpec = null;
+    this._types = null;
+
+    return this;
+  }
+
   // ---- INFO / BUILD ------------------------------------------
 
   _info(rows = this._rows) {
@@ -335,9 +809,10 @@ class Pipeline {
     const cols = nRows ? Object.keys(rows[0]) : [];
     const nCols = cols.length;
 
-    const types = this._types || Inference.inferTypes(rows);
-    const cardinality = {};
+    // Always infer fresh types based on current rows
+    const types = Inference.inferTypes(rows);
 
+    const cardinality = {};
     for (const c of cols) {
       const set = new Set();
       for (const r of rows) set.add(r[c]);
@@ -358,10 +833,10 @@ class Pipeline {
   }
 
   build() {
-    const baseProfile = this._info(this._rows);
-
     // --- NON-PIVOT CASE --------------------------------------
     if (!this._pivotSpec) {
+      const baseProfile = this._info(this._rows);
+
       const cols = baseProfile.nRows ? Object.keys(this._rows[0]) : [];
       const measures =
         baseProfile.numericColumns && baseProfile.numericColumns.length
@@ -396,8 +871,11 @@ class Pipeline {
       columnIndex,
     } = this._applyPivot(this._rows);
 
+    // profile on the *wide* data we actually return
+    const finalProfile = this._info(wideRows);
+
     const info = {
-      ...baseProfile,
+      ...finalProfile,
       rowDims,
       colDims,
       measures,
