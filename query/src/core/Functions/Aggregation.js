@@ -25,7 +25,6 @@ export class Agg {
 
   /** count(rows or column) */
   static count(vals, _col, rows) {
-    // If rows is available (group context), use it
     return rows ? rows.length : vals.length;
   }
 
@@ -46,5 +45,69 @@ export class Agg {
 
     const h = idx - lo;
     return a[lo] * (1 - h) + a[hi] * h;
+  }
+
+  /** min(column[]) */
+  static min(vals) {
+    const filtered = vals.filter((v) => v != null && v !== "").map(Number);
+    if (!filtered.length) return null;
+    return filtered.reduce(
+      (acc, v) => (acc === null || v < acc ? v : acc),
+      null
+    );
+  }
+
+  /** max(column[]) */
+  static max(vals) {
+    const filtered = vals.filter((v) => v != null && v !== "").map(Number);
+    if (!filtered.length) return null;
+    return filtered.reduce(
+      (acc, v) => (acc === null || v > acc ? v : acc),
+      null
+    );
+  }
+
+  /** variance (sample) */
+  static var(vals) {
+    const filtered = vals.filter((v) => v != null && v !== "").map(Number);
+    const n = filtered.length;
+    if (n < 2) return null;
+
+    const mean = filtered.reduce((acc, v) => acc + v, 0) / n;
+    const ss = filtered.reduce((acc, v) => {
+      const d = v - mean;
+      return acc + d * d;
+    }, 0);
+
+    return ss / (n - 1); // sample variance
+  }
+
+  /** stddev (sample) */
+  static stddev(vals) {
+    const v = Agg.var(vals);
+    return v == null ? null : Math.sqrt(v);
+  }
+
+  /** median(column[]) */
+  static median(vals) {
+    return Agg.quantile(0.5, vals);
+  }
+
+  /** first(column[]) – first non-null value */
+  static first(vals) {
+    for (let i = 0; i < vals.length; i++) {
+      const v = vals[i];
+      if (v !== null && v !== undefined && v !== "") return v;
+    }
+    return null;
+  }
+
+  /** last(column[]) – last non-null value */
+  static last(vals) {
+    for (let i = vals.length - 1; i >= 0; i--) {
+      const v = vals[i];
+      if (v !== null && v !== undefined && v !== "") return v;
+    }
+    return null;
   }
 }

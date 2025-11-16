@@ -1,5 +1,6 @@
 import { Csv } from "./io/csv.js";
 import { Inference } from "./core/Inference.js";
+import { Agg } from "./core/Functions/Aggregation.js"; // adjust path if needed
 
 class Pipeline {
   constructor(rows) {
@@ -9,8 +10,54 @@ class Pipeline {
     this._pivotSpec = null;
   }
 
+  /**
+   * summariseAll()
+   *
+   * Sugar for:
+   *  - infer numeric columns
+   *  - run stats() on all of them
+   *
+   * Example (global):
+   *   base.clone()
+   *     .summariseAll()
+   *     .build();
+   *
+   * Example (by group):
+   *   base.clone()
+   *     .group("user_type")
+   *     .summariseAll()
+   *     .build();
+   */
+  summariseAll() {
+    const info = this._info(this._rows);
+    const metrics = info.numericColumns || [];
+    if (!metrics.length) {
+      throw new Error("summariseAll(): no numeric columns found.");
+    }
+    return this.stats(...metrics);
+  }
+
   static _copyRows(rows) {
     return rows.map((r) => ({ ...r }));
+  }
+
+  /**
+   * clone()
+   *
+   * Create a new Pipeline with a copy of the current rows.
+   * Useful because Pipeline is mutable: distinct(), dedupeBy(), etc.
+   * all mutate `this._rows`.
+   *
+   * Example:
+   *   const base = await q.fetch_csv("./data/raw2.csv");
+   *   const a = base.clone().distinct("day").build();
+   *   const b = base.clone().dedupeBy("day", "imp").build();
+   */
+  clone() {
+    const rowsCopy = Pipeline._copyRows(this._rows);
+    const p = new Pipeline(rowsCopy);
+    // do NOT copy group/pivot state; clone is "fresh pipeline on same data"
+    return p;
   }
 
   // --- AGGREGATION HELPERS ------------------------------------
@@ -214,9 +261,47 @@ class Pipeline {
   }
 
   agg(spec) {
-    if (!this._groupKeys || !this._groupKeys.length)
-      throw new Error("agg() requires group() first");
+    const hasGroup = this._groupKeys && this._groupKeys.length;
 
+    // ------------------------------------------------------
+    // NO-GROUP MODE → treat whole dataset as ONE group
+    // ------------------------------------------------------
+    if (!hasGroup) {
+      const rows = this._rows;
+      const out = {};
+
+      for (const outCol in spec) {
+        const aggSpec = spec[outCol];
+
+        let impl;
+        let inCol;
+
+        if (typeof aggSpec === "function" && aggSpec.__agg__) {
+          impl = aggSpec;
+          inCol = outCol;
+        } else if (aggSpec && typeof aggSpec === "object" && aggSpec.__agg__) {
+          impl = aggSpec.__impl__ || aggSpec;
+          inCol = aggSpec.__col__ || outCol;
+        } else {
+          throw new Error(`agg() spec for "${outCol}" is not an aggregator`);
+        }
+
+        const vals = inCol
+          ? rows.map((r) => r[inCol])
+          : rows.map((r) => r[outCol]);
+
+        out[outCol] = impl(vals, inCol, rows);
+      }
+
+      this._rows = [out]; // << one summary row
+      this._pivotSpec = null;
+      this._types = null;
+      return this;
+    }
+
+    // ------------------------------------------------------
+    // GROUPED MODE (original behavior)
+    // ------------------------------------------------------
     const gmap = new Map();
     for (const r of this._rows) {
       const key = JSON.stringify(this._groupKeys.map((k) => r[k]));
@@ -258,7 +343,95 @@ class Pipeline {
 
     this._rows = out;
     this._groupKeys = null;
-    // schema changed → types stale
+    this._pivotSpec = null;
+    this._types = null;
+    return this;
+  }
+
+  /**
+   * stats(...cols)
+   *
+   * Sugar on top of group() + agg() to get "ES-style stats" in one shot.
+   *
+   * Requires group() first, just like agg().
+   *
+   * Example:
+   *   base.clone()
+   *     .group("user_type")
+   *     .stats("imp", "rev")
+   *     .build();
+   *
+   * Output columns per metric:
+   *   <col>_count, <col>_min, <col>_max,
+   *   <col>_mean, <col>_median, <col>_stddev, <col>_var
+   */
+  stats(...cols) {
+    const metrics = cols.flat();
+    if (!metrics.length) {
+      throw new Error("stats() requires at least one metric column.");
+    }
+
+    const hasGroup = this._groupKeys && this._groupKeys.length;
+
+    // ------------------------------------------------------
+    // NO-GROUP MODE → global stats in ONE row
+    // ------------------------------------------------------
+    if (!hasGroup) {
+      const rows = this._rows;
+      const obj = {};
+
+      for (const m of metrics) {
+        const vals = rows.map((r) => r[m]);
+
+        obj[`${m}_count`] = Agg.count(vals, m, rows);
+        obj[`${m}_min`] = Agg.min(vals);
+        obj[`${m}_max`] = Agg.max(vals);
+        obj[`${m}_mean`] = Agg.mean(vals);
+        obj[`${m}_median`] = Agg.median(vals);
+        obj[`${m}_stddev`] = Agg.stddev(vals);
+        obj[`${m}_var`] = Agg.var(vals);
+      }
+
+      this._rows = [obj]; // summary row
+      this._pivotSpec = null;
+      this._types = null;
+      return this;
+    }
+
+    // ------------------------------------------------------
+    // GROUPED MODE (original-style)
+    // ------------------------------------------------------
+    const gmap = new Map();
+    for (const r of this._rows) {
+      const key = JSON.stringify(this._groupKeys.map((k) => r[k]));
+      if (!gmap.has(key)) gmap.set(key, []);
+      gmap.get(key).push(r);
+    }
+
+    const out = [];
+    for (const [key, rows] of gmap.entries()) {
+      const obj = {};
+      const keyVals = JSON.parse(key);
+      this._groupKeys.forEach((k, i) => (obj[k] = keyVals[i]));
+
+      for (const m of metrics) {
+        const vals = rows.map((r) => r[m]);
+
+        obj[`${m}_count`] = Agg.count(vals, m, rows);
+        obj[`${m}_min`] = Agg.min(vals);
+        obj[`${m}_max`] = Agg.max(vals);
+        obj[`${m}_mean`] = Agg.mean(vals);
+        obj[`${m}_median`] = Agg.median(vals);
+        obj[`${m}_stddev`] = Agg.stddev(vals);
+        obj[`${m}_var`] = Agg.var(vals);
+      }
+
+      out.push(obj);
+    }
+
+    this._rows = out;
+    this._groupKeys = null;
+    this._pivotSpec = null;
     this._types = null;
     return this;
   }
@@ -799,6 +972,129 @@ class Pipeline {
     this._pivotSpec = null;
     this._types = null;
 
+    return this;
+  }
+
+  // -------------------------------------------------------------
+  // DISTINCT  (projection + deduplication)
+  // -------------------------------------------------------------
+  /**
+   * distinct(...cols)
+   *
+   * Behaves like:
+   *   SQL:   SELECT DISTINCT col1, col2 FROM table
+   *   dplyr: df %>% distinct(col1, col2)
+   *
+   * Meaning:
+   *   - Keeps ONLY the requested columns.
+   *   - Removes duplicate combinations.
+   *   - Uses FIRST occurrence order (stable).
+   *
+   * Example:
+   *   Input:
+   *     [{ day:"2025-01-01", src:"Email" },
+   *      { day:"2025-01-01", src:"FB"    },
+   *      { day:"2025-01-02", src:"Tik"   }]
+   *
+   *   distinct("day")
+   *    → [{ day:"2025-01-01" },
+   *       { day:"2025-01-02" }]
+   *
+   * NOTE:
+   *   This is a *terminal-like* op because you lose other columns.
+   */
+  distinct(...cols) {
+    const columns = cols.flat();
+    if (!this._rows.length) return this;
+
+    const out = [];
+    const seen = new Set();
+
+    for (const r of this._rows) {
+      const key = JSON.stringify(columns.map((c) => r[c]));
+      if (!seen.has(key)) {
+        seen.add(key);
+        const newRow = {};
+        for (const c of columns) newRow[c] = r[c];
+        out.push(newRow);
+      }
+    }
+
+    this._rows = out;
+    this._pivotSpec = null;
+    this._types = null;
+    return this;
+  }
+
+  // -------------------------------------------------------------
+  // DEDUPE BY KEY  (row-level keep-one-per-group)
+  // -------------------------------------------------------------
+  /**
+   * dedupeBy(keyCol, orderCol, { direction = "desc" })
+   *
+   * Row-level deduplication.
+   * Pick ONE FULL ROW per key based on an ordering column.
+   *
+   * This is the clean version of the ugly SQL pattern:
+   *   SELECT * FROM (
+   *     SELECT *,
+   *       ROW_NUMBER() OVER (
+   *         PARTITION BY keyCol ORDER BY orderCol DESC
+   *       ) AS rn
+   *     FROM table
+   *   ) WHERE rn = 1;
+   *
+   * Why it's different from FIRST() / LAST():
+   *   FIRST/LAST return single VALUES per group.
+   *   dedupeBy returns the entire WINNING ROW.
+   *
+   * Example:
+   *   Input:
+   *     [
+   *       { user:"A", ts:10, event:"click", revenue:0 },
+   *       { user:"A", ts:20, event:"buy",   revenue:50 }
+   *     ]
+   *
+   *   dedupeBy("user", "ts")
+   *     → keeps ts=20 row:
+   *       { user:"A", ts:20, event:"buy", revenue:50 }
+   *
+   *   Compare FIRST/LAST:
+   *     group("user").agg({
+   *       first_ts: FIRST("ts"),
+   *       last_ts:  LAST("ts")
+   *     })
+   *   → loses event + revenue columns:
+   *       { user:"A", first_ts:10, last_ts:20 }
+   */
+  dedupeBy(keyCol, orderCol, { direction = "desc" } = {}) {
+    if (!this._rows.length) return this;
+
+    const rows = this._rows;
+    const compare = direction === "asc" ? (a, b) => a < b : (a, b) => a > b; // default: keep MAX (latest/biggest)
+
+    const map = new Map(); // key -> best row
+
+    for (const r of rows) {
+      const key = r[keyCol];
+      const current = map.get(key);
+
+      if (!current) {
+        map.set(key, r);
+        continue;
+      }
+
+      const curVal = current[orderCol];
+      const newVal = r[orderCol];
+
+      if (compare(newVal, curVal)) {
+        map.set(key, r);
+      }
+    }
+
+    this._rows = Array.from(map.values());
+    this._pivotSpec = null;
+    this._types = null;
     return this;
   }
 

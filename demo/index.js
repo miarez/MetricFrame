@@ -7,6 +7,13 @@ import {
   mean,
   count,
   quantile,
+  first,
+  last,
+  min,
+  max,
+  stddev,
+  variance,
+  median,
 } from "../Query/src/core/Builders/Aggregation.js";
 import { Column } from "../Query/src/core/Builders/Column.js";
 import { Scalar } from "../Query/src/core/Functions/Scalar.js";
@@ -64,26 +71,16 @@ const {
   all,
   any,
 } = Column;
-
 document.addEventListener("DOMContentLoaded", async () => {
-  const left = await q.fetch_csv("./data/left.csv");
-  const right = await q.fetch_csv("./data/right.csv");
+  const base = await q.fetch_csv("./data/raw2.csv");
 
-  console.log("Inner:");
-  new Table(left.innerJoin(right, "id").build()).build();
+  const stats = base
+    .clone()
+    .summariseAll()
+    // .group("user_type")
+    // .stats("imp", "rev", "cost")
+    // .agg({ imp: sum("imp") })
+    .build();
 
-  // const pipeline = await q.fetch_csv("./data/for-unpivot.csv");
-
-  // new Table(
-  //   pipeline
-  //     .unpivot({
-  //       cols: ["imp", "rev", "cost"],
-  //       namesTo: "metric",
-  //       valuesTo: "value",
-  //     })
-  //     .build()
-  // )
-  //   .selectionMode("grain")
-  //   .heatmapByDimension("source", "perColumn")
-  //   .build();
+  new Table(stats).build();
 });

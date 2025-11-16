@@ -79,3 +79,116 @@ export function quantile(p, colName) {
     __impl__: (vals) => Agg.quantile(p, vals),
   };
 }
+
+/**
+ * first
+ *
+ * Value-level aggregator:
+ *   - Factory: first("day")
+ *   - Implicit-column form: first_day: first
+ *
+ * Difference vs dedupeBy:
+ *   - first("day")   → returns the first VALUE of "day" per group
+ *   - dedupeBy("k")  → returns the whole ROW per key
+ */
+export function first(colName) {
+  return {
+    __agg__: true,
+    __name__: "first",
+    __col__: colName || null,
+    __impl__: Agg.first,
+  };
+}
+markAgg("first", first);
+
+/**
+ * last
+ *
+ * Value-level aggregator:
+ *   - Factory: last("day")
+ *   - Implicit-column form: last_day: last
+ *
+ * Example:
+ *   group("user_type").agg({
+ *     first_day: first("day"),
+ *     last_day:  last("day"),
+ *   })
+ *
+ * Versus:
+ *   dedupeBy("user_type", "day")  // keeps FULL ROW with min/max day
+ */
+export function last(colName) {
+  return {
+    __agg__: true,
+    __name__: "last",
+    __col__: colName || null,
+    __impl__: Agg.last,
+  };
+}
+markAgg("last", last);
+
+/**
+ * min
+ */
+export function min(colName) {
+  return {
+    __agg__: true,
+    __name__: "min",
+    __col__: colName || null,
+    __impl__: Agg.min,
+  };
+}
+markAgg("min", min);
+
+/**
+ * max
+ */
+export function max(colName) {
+  return {
+    __agg__: true,
+    __name__: "max",
+    __col__: colName || null,
+    __impl__: Agg.max,
+  };
+}
+markAgg("max", max);
+
+/**
+ * stddev (sample std dev)
+ */
+export function stddev(colName) {
+  return {
+    __agg__: true,
+    __name__: "stddev",
+    __col__: colName || null,
+    __impl__: Agg.stddev,
+  };
+}
+markAgg("stddev", stddev);
+
+/**
+ * var (sample variance)
+ */
+export function variance(colName) {
+  return {
+    __agg__: true,
+    __name__: "var",
+    __col__: colName || null,
+    __impl__: Agg.var,
+  };
+}
+markAgg("var", variance);
+
+/**
+ * median
+ * (just quantile(0.5) with a nicer name)
+ */
+export function median(colName) {
+  return {
+    __agg__: true,
+    __name__: "median",
+    __col__: colName || null,
+    __impl__: Agg.median,
+  };
+}
+markAgg("median", median);
