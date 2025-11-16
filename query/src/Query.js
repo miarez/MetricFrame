@@ -13,7 +13,7 @@ class Pipeline {
     return rows.map((r) => ({ ...r }));
   }
 
-  // inside MetricFrame class
+  // ---- STATIC CONSTRUCTORS ------------------------------------
 
   static async fetch_csv(url, opts = {}) {
     const res = await fetch(url);
@@ -38,16 +38,9 @@ class Pipeline {
 
     return new Pipeline(Csv.parse(String(input), opts));
   }
-  /**
-   * Sugar
-   * .select("month", "country", "revenue", "profit")     // regular
-   * .select("-profit", "-country")                       // drop syntax
-   * .select("^cookie")                                   // regex prefix
-   * .select(/cookie/i)                                   // real RegExp
-   * .select("regex:^cookie")                             // explicit regex
-   * @param  {...any} args
-   * @returns
-   */
+
+  // ---- COLUMN SELECTION / FILTER / CALC -----------------------
+
   select(...args) {
     const cols = args.flat();
     const first = this._rows[0];
@@ -58,7 +51,7 @@ class Pipeline {
     let drop = new Set();
 
     for (let token of cols) {
-      // regex select: /^cookie/, "regex:^cookie", or string starting with ^
+      // regex select
       if (token instanceof RegExp) {
         allCols.filter((c) => token.test(c)).forEach((c) => keep.add(c));
         continue;
@@ -103,6 +96,7 @@ class Pipeline {
 
     return this;
   }
+
   filter(fnOrWrapper) {
     if (!fnOrWrapper) throw new Error("filter() requires a predicate");
 
@@ -118,7 +112,7 @@ class Pipeline {
   }
 
   calc(map) {
-    const rows = Pipeline._copyRows(this._rows); // 👈 keep this
+    const rows = Pipeline._copyRows(this._rows);
 
     for (const r of rows) {
       for (const [k, fn] of Object.entries(map)) {
@@ -135,10 +129,14 @@ class Pipeline {
     this._rows = rows;
     return this;
   }
+
+  // ---- GROUP / AGG / ORDER / LIMIT ---------------------------
+
   group(...keys) {
     this._groupKeys = keys.flat();
     return this;
   }
+
   agg(spec) {
     if (!this._groupKeys || !this._groupKeys.length)
       throw new Error("agg() requires groupBy() first");
@@ -163,11 +161,9 @@ class Pipeline {
         let inCol;
 
         if (typeof aggSpec === "function" && aggSpec.__agg__) {
-          // legacy: profit: mean  → input column = outCol
           impl = aggSpec;
           inCol = outCol;
         } else if (aggSpec && typeof aggSpec === "object" && aggSpec.__agg__) {
-          // new: total_revenue: sum("revenue")
           impl = aggSpec.__impl__ || aggSpec;
           inCol = aggSpec.__col__ || outCol;
         } else {
@@ -188,8 +184,8 @@ class Pipeline {
     this._groupKeys = null;
     return this;
   }
+
   order(...cols) {
-    // flatten so order("a","-b") or order(["a","-b"]) both work
     const keys = cols.flat();
 
     this._rows.sort((a, b) => {
@@ -213,12 +209,13 @@ class Pipeline {
 
     return this;
   }
+
   limit(n) {
     this._rows = this._rows.slice(0, n);
     return this;
   }
 
-  // --- PIVOT BUILDER API ---------------------------------------
+  // ---- PIVOT BUILDER API -------------------------------------
 
   pivot({ rows = [], columns = [], measures = [] } = {}) {
     this._pivotSpec = {
@@ -258,16 +255,21 @@ class Pipeline {
   _applyPivot(rows) {
     const spec = this._pivotSpec;
     if (!spec || !spec.columns || !spec.columns.length) {
-      // nothing to pivot → return rows as-is and empty index
-      return { rows, columnIndex: {} };
+      return {
+        rows,
+        rowDims: [],
+        colDims: [],
+        measures: [],
+        columnIndex: [],
+      };
     }
 
     const rowDims = spec.rows || [];
     const colDims = spec.columns || [];
-    const measures = spec.measures && spec.measures.length ? spec.measures : []; // if empty we'll fill from profile later
+    const measuresSpec = spec.measures || [];
 
     const outMap = new Map(); // key: JSON(rowDims values) -> row object
-    const columnIndex = {}; // syntheticColId -> { measure, dims, path }
+    const colIndexObj = {}; // syntheticColId -> { measure, dims, path }
 
     for (const r of rows) {
       // 1) find or create the pivoted row keyed by rowDims
@@ -286,10 +288,10 @@ class Pipeline {
       const dimVals = {};
       for (const d of colDims) dimVals[d] = r[d];
 
-      // 3) for each measure, create a synthetic column and fill it
+      // 3) choose measures for this row
       const useMeasures =
-        measures.length > 0
-          ? measures
+        measuresSpec.length > 0
+          ? measuresSpec
           : Object.keys(r).filter(
               (c) => !rowDims.includes(c) && !colDims.includes(c)
             );
@@ -297,11 +299,10 @@ class Pipeline {
       for (const m of useMeasures) {
         const path = [m, ...colDims.map((d) => String(r[d]))];
         const colId = path.join("|"); // e.g. "imp|control|0"
-
         outRow[colId] = r[m];
 
-        if (!columnIndex[colId]) {
-          columnIndex[colId] = {
+        if (!colIndexObj[colId]) {
+          colIndexObj[colId] = {
             measure: m,
             dims: { ...dimVals },
             path, // ["imp","control","0"]
@@ -310,14 +311,31 @@ class Pipeline {
       }
     }
 
-    return { rows: Array.from(outMap.values()), columnIndex };
+    const wideRows = Array.from(outMap.values());
+
+    const columnIndex = Object.entries(colIndexObj).map(([key, meta]) => ({
+      key,
+      path: meta.path,
+      dims: meta.dims,
+      measure: meta.measure,
+    }));
+
+    const measures =
+      measuresSpec.length > 0
+        ? measuresSpec.slice()
+        : Array.from(new Set(columnIndex.map((c) => c.measure)));
+
+    return { rows: wideRows, rowDims, colDims, measures, columnIndex };
   }
+
+  // ---- INFO / BUILD ------------------------------------------
+
   _info(rows = this._rows) {
     const nRows = rows.length;
     const cols = nRows ? Object.keys(rows[0]) : [];
     const nCols = cols.length;
 
-    const types = this._types || inferTypes(rows);
+    const types = this._types || Inference.inferTypes(rows);
     const cardinality = {};
 
     for (const c of cols) {
@@ -326,53 +344,72 @@ class Pipeline {
       cardinality[c] = set.size;
     }
 
-    const seriesColumns = cols.filter((c) => types[c] === "num");
-    const facetFields = cols.filter(
-      (c) => types[c] === "cat" && cardinality[c] > 1 && cardinality[c] <= 12
-    );
+    const numericColumns = cols.filter((c) => types[c] === "num");
+    const categoricalColumns = cols.filter((c) => types[c] === "cat");
 
     return {
       types,
       nRows,
       nCols,
       cardinality,
-      seriesColumns,
-      facetFields,
-
-      // ⬇️ pivot-related metadata gets filled in by build()
-      rowDims: [],
-      colDims: [],
-      measures: seriesColumns.slice(),
-      columnIndex: {},
+      numericColumns,
+      categoricalColumns,
     };
   }
+
   build() {
-    // base profile from the *tall* rows
     const baseProfile = this._info(this._rows);
 
-    // no pivot specified → behave like before
+    // --- NON-PIVOT CASE --------------------------------------
     if (!this._pivotSpec) {
-      return { df: this._rows, info: baseProfile };
+      const cols = baseProfile.nRows ? Object.keys(this._rows[0]) : [];
+      const measures =
+        baseProfile.numericColumns && baseProfile.numericColumns.length
+          ? baseProfile.numericColumns.slice()
+          : [];
+      const rowDims = cols.filter((c) => !measures.includes(c));
+
+      const columnIndex = measures.map((key) => ({
+        key,
+        path: [key],
+        dims: {},
+        measure: key,
+      }));
+
+      const info = {
+        ...baseProfile,
+        rowDims,
+        colDims: [],
+        measures,
+        columnIndex,
+      };
+
+      return { df: this._rows, info };
     }
 
-    // apply pivot to produce wide rows + columnIndex
-    const { rows: wideRows, columnIndex } = this._applyPivot(this._rows);
+    // --- PIVOT CASE ------------------------------------------
+    const {
+      rows: wideRows,
+      rowDims,
+      colDims,
+      measures,
+      columnIndex,
+    } = this._applyPivot(this._rows);
 
-    const { rows, columns, measures } = this._pivotSpec;
+    const info = {
+      ...baseProfile,
+      rowDims,
+      colDims,
+      measures,
+      columnIndex,
+      pivotSpec: { ...this._pivotSpec },
+    };
 
-    baseProfile.rowDims = rows || [];
-    baseProfile.colDims = columns || [];
-    baseProfile.measures =
-      (measures && measures.length) || !baseProfile.seriesColumns
-        ? measures
-        : baseProfile.seriesColumns.slice();
-    baseProfile.columnIndex = columnIndex;
-
-    return { df: wideRows, info: baseProfile };
+    return { df: wideRows, info };
   }
 }
 
-export const MetricFrame = {
+export const Query = {
   read_csv: Pipeline.read_csv,
   fetch_csv: Pipeline.fetch_csv,
 };

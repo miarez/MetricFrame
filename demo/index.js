@@ -1,106 +1,74 @@
 // /demo/index.js
 
-import { MetricFrame as mf } from "../query/src/MetricFrame.js";
-import { sum } from "../query/src/core/Builders/Aggregation.js";
-import { Table } from "../table/src/Table.js";
-// If you want Column functions later, you can also import:
-// import { Column } from "../src/core/Builders/Column.js";
-
-export function adaptMetricFrameToTableInfo(df, mfInfo = {}) {
-  // 0) Already table-shaped? Just use it.
-  if (Array.isArray(mfInfo.columnIndex) && mfInfo.columnIndex.length) {
-    return mfInfo;
-  }
-
-  const cols = Array.from(new Set(df.flatMap((row) => Object.keys(row || {}))));
-
-  const measuresFromInfo = mfInfo.measures || [];
-  const hasPipes = cols.some((c) => c.includes("|"));
-
-  // ---------- NON-PIVOT CASE ----------
-  if (!hasPipes) {
-    // Decide which columns are measures
-    const measures =
-      measuresFromInfo.length > 0
-        ? measuresFromInfo
-        : cols.filter((c) => mfInfo.types?.[c] === "num");
-
-    // Everything else is a row dimension
-    const rowDims =
-      mfInfo.rowDims && mfInfo.rowDims.length
-        ? mfInfo.rowDims
-        : cols.filter((c) => !measures.includes(c));
-
-    // columnIndex only for measures (so dims don't repeat)
-    const columnIndex = measures.map((key) => ({
-      key,
-      path: [key],
-      dims: {},
-      measure: key,
-    }));
-
-    return {
-      ...mfInfo,
-      rowDims,
-      colDims: [],
-      measures,
-      columnIndex,
-    };
-  }
-
-  // ---------- PIVOT CASE ----------
-  const pivotSpec = mfInfo.pivotSpec || mfInfo.pivot || {};
-  const rowsSpec = pivotSpec.rows || mfInfo.rowDims || [];
-  const colsSpec = pivotSpec.columns || mfInfo.colDims || [];
-
-  // Row dims are exactly what the user asked for in pivot.rows
-  const rowDims = rowsSpec.length
-    ? rowsSpec
-    : cols.filter((c) => !c.includes("|"));
-
-  // Column dims are exactly pivot.columns
-  const colDims = colsSpec.length ? colsSpec : [];
-
-  // Data columns = piped columns only
-  const dataCols = cols.filter((c) => c.includes("|"));
-
-  // Base measures inferred from piped keys unless provided
-  const inferredMeasures = [...new Set(dataCols.map((k) => k.split("|")[0]))];
-  const measures =
-    measuresFromInfo.length > 0 ? measuresFromInfo : inferredMeasures;
-
-  const columnIndex = dataCols.map((key) => {
-    const parts = key.split("|");
-    const measure = parts[0];
-    const dimVals = parts.slice(1); // [user_type_value, is_churned_value]
-
-    const dims = {};
-    colDims.forEach((dimName, i) => {
-      dims[dimName] = dimVals[i];
-    });
-
-    // HEADER STACK ORDER:
-    //   user_type (top row)
-    //   is_churned (second row)
-    //   measure (bottom row)
-    const path = [...dimVals, measure];
-
-    return { key, path, dims, measure };
-  });
-
-  return {
-    ...mfInfo,
-    rowDims,
-    colDims,
-    measures,
-    columnIndex,
-  };
-}
+import { Query as q } from "../Query/src/Query.js";
+import { Table } from "../Table/src/Table.js";
+import {
+  sum,
+  mean,
+  count,
+  quantile,
+} from "../Query/src/core/Builders/Aggregation.js";
+import { Column } from "../Query/src/core/Builders/Column.js";
+import { Scalar } from "../Query/src/core/Functions/Scalar.js";
+const {
+  add,
+  sub,
+  mul,
+  div,
+  mod,
+  abs,
+  round,
+  floor,
+  ceil,
+  pct,
+  change,
+  clip,
+  eq,
+  neq,
+  gt,
+  lt,
+  gte,
+  lte,
+  between,
+  inSet,
+  notIn,
+  ifelse,
+  coalesce,
+  concat,
+  upper,
+  lower,
+  title,
+  trim,
+  ltrim,
+  rtrim,
+  substr,
+  replace,
+  startsWith,
+  endsWith,
+  contains,
+  len,
+  today,
+  now,
+  year,
+  month,
+  day,
+  quarter,
+  weekday,
+  addDays,
+  addMonths,
+  addYears,
+  diffDays,
+  diffMonths,
+  formatDate,
+  bucket,
+  all,
+  any,
+} = Column;
 
 document.addEventListener("DOMContentLoaded", async () => {
-  const pipeline = await mf.fetch_csv("./data/raw2.csv");
+  const pipeline = await q.fetch_csv("./data/raw2.csv");
 
-  const { df, info: mfInfo } = pipeline
+  const { df, info } = pipeline
     .group("source", "day", "user_type")
     .agg({
       imp: sum("imp"),
@@ -108,14 +76,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       cost: sum("cost"),
     })
     .order("source", "day")
-    .pivot({
-      rows: ["source", "day"],
-      columns: ["user_type"],
-      measures: ["imp", "rev", "cost"],
-    })
+    // .pivot({
+    //   rows: ["source", "day"],
+    //   columns: ["user_type"],
+    //   measures: ["imp", "rev", "cost"],
+    // })
     .build();
-
-  const info = adaptMetricFrameToTableInfo(df, mfInfo);
 
   console.log(df);
 
@@ -131,10 +97,3 @@ document.addEventListener("DOMContentLoaded", async () => {
     })
     .build();
 });
-
-// .heatmapByDimension("source", "perColumn")
-
-// .groupBorders("is_weekend", {
-//   color: "#ffffff",
-//   width: "3px",
-// })
