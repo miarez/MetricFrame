@@ -1,5 +1,10 @@
 // /demo/index.js
 
+import { XY } from "../Chart/builder/XY.js";
+import { Series } from "../Chart/builder/Series.js";
+import { Chart } from "../Chart/builder/Chart.js";
+import { createChart } from "../Chart/src/core/createChart.js";
+
 import { Query as q } from "../Query/src/Query.js";
 import { Table } from "../Table/src/Table.js";
 import {
@@ -77,16 +82,36 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const casted = base
     .clone()
-    .cast({
-      imp: "num",
-      rev: "num",
-      cost: "num",
-      is_weekend: "bool",
+    .group("day")
+    .agg({
+      imp: sum("imp"),
+      rev: sum("rev"),
+      cost: sum("cost"),
     })
-    .parseDate("day", "YYYY-MM-DD")
+    .order("day")
     .build();
 
-  new Table(casted).build();
+  new Table(casted).heatmapPerColumn().build();
+
+  console.table(casted.df);
+
+  const chartConfig = new Chart()
+    .htmlContainer("chartdiv")
+    .engine(
+      new XY()
+        .category("day")
+        .addSeries(new Series("imp"))
+        .addSeries(new Series("rev").axis("y2"))
+        .addSeries(new Series("cost").axis("y3"))
+        .build()
+    )
+    .build();
+
+  chartConfig.data = casted.df;
+
+  console.log(chartConfig);
+
+  createChart(chartConfig);
 });
 
 /**
