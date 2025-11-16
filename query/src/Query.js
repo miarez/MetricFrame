@@ -2,6 +2,52 @@ import { Csv } from "./io/csv.js";
 import { Inference } from "./core/Inference.js";
 import { Agg } from "./core/Functions/Aggregation.js"; // adjust path if needed
 
+// --- Simple date codec (deliberately tiny & boring) -------------
+const SimpleDate = {
+  /**
+   * parse(str, fmt) -> ISO string or null
+   *
+   * Supported formats (for now):
+   *  - "YYYY-MM-DD"
+   *  - "YYYY/MM/DD"
+   *  - "YYYY-MM-DD HH:mm:ss"
+   */
+  parse(str, fmt) {
+    if (str == null || str === "") return null;
+    const s = String(str).trim();
+    if (!s) return null;
+
+    if (fmt === "YYYY-MM-DD") {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+      if (!m) return null;
+      const [_, y, mn, d] = m;
+      const date = new Date(Date.UTC(+y, +mn - 1, +d));
+      if (Number.isNaN(date.getTime())) return null;
+      return date.toISOString();
+    }
+
+    if (fmt === "YYYY/MM/DD") {
+      const m = /^(\d{4})\/(\d{2})\/(\d{2})$/.exec(s);
+      if (!m) return null;
+      const [_, y, mn, d] = m;
+      const date = new Date(Date.UTC(+y, +mn - 1, +d));
+      if (Number.isNaN(date.getTime())) return null;
+      return date.toISOString();
+    }
+
+    if (fmt === "YYYY-MM-DD HH:mm:ss") {
+      const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(s);
+      if (!m) return null;
+      const [_, y, mn, d, hh, mm, ss] = m;
+      const date = new Date(Date.UTC(+y, +mn - 1, +d, +hh, +mm, +ss));
+      if (Number.isNaN(date.getTime())) return null;
+      return date.toISOString();
+    }
+
+    throw new Error(`SimpleDate.parse: unsupported format "${fmt}"`);
+  },
+};
+
 class Pipeline {
   constructor(rows) {
     this._rows = rows || [];
@@ -39,6 +85,10 @@ class Pipeline {
 
   static _copyRows(rows) {
     return rows.map((r) => ({ ...r }));
+  }
+
+  static _isNA(v) {
+    return v === null || v === undefined || v === "";
   }
 
   /**
@@ -1180,6 +1230,530 @@ class Pipeline {
     };
 
     return { df: wideRows, info };
+  }
+
+  // NEW ADDDITIONS
+  /**
+   * dropNA(cols?, { how = "any" })
+   *
+   * Row filter based on missingness.
+   *
+   * - dropNA()
+   *     → drops any row where ANY numeric column is NA
+   *
+   * - dropNA("imp")
+   * - dropNA(["imp", "rev"], { how: "any" | "all" })
+   *     → scoped to specific columns
+   *
+   *   how = "any" (default):
+   *     drop row if ANY of the selected cols is NA
+   *
+   *   how = "all":
+   *     drop row only if ALL of the selected cols are NA
+   */
+  dropNA(cols, opts = {}) {
+    if (!this._rows.length) return this;
+
+    const how = opts.how || "any";
+
+    let columns;
+    if (cols == null) {
+      // no cols specified → use numeric columns
+      const info = this._info(this._rows);
+      columns = info.numericColumns || [];
+      if (!columns.length) {
+        // nothing to check; no-op
+        return this;
+      }
+    } else {
+      columns = Array.isArray(cols) ? cols : [cols];
+    }
+
+    const isNA = Pipeline._isNA;
+
+    this._rows = this._rows.filter((r) => {
+      const flags = columns.map((c) => isNA(r[c]));
+
+      if (how === "any") {
+        // keep row if NOT (any NA)
+        return !flags.some((f) => f);
+      } else if (how === "all") {
+        // keep row if NOT (all NA)
+        return !flags.every((f) => f);
+      } else {
+        throw new Error(`dropNA(): unknown how="${how}", use "any" or "all"`);
+      }
+    });
+
+    this._pivotSpec = null;
+    this._types = null;
+    return this;
+  }
+
+  /**
+   * fillNA({ col: value | Column.*(...) | (row) => value })
+   *
+   * Replace missing values WITHOUT dropping rows.
+   *
+   * Example:
+   *   base.clone()
+   *     .fillNA({
+   *       imp: 0,
+   *       rev: (r) => r.rev ?? 0,
+   *     })
+   *     .build();
+   */
+  fillNA(spec) {
+    if (!this._rows.length) return this;
+    if (!spec || typeof spec !== "object") {
+      throw new Error("fillNA() requires a spec object: { col: rule }");
+    }
+
+    const isNA = Pipeline._isNA;
+
+    for (const r of this._rows) {
+      for (const [col, rule] of Object.entries(spec)) {
+        if (!isNA(r[col])) continue;
+
+        let v;
+        if (rule && typeof rule === "object" && rule.__columnfn__) {
+          // Column.* descriptor
+          v = rule.__columnfn__(r);
+        } else if (typeof rule === "function") {
+          // row => value
+          v = rule(r);
+        } else {
+          // scalar
+          v = rule;
+        }
+
+        r[col] = v;
+      }
+    }
+
+    this._pivotSpec = null;
+    this._types = null;
+    return this;
+  }
+
+  /**
+   * fillDown(col, { by?, orderBy? })
+   *
+   * Forward-fill missing values in a column.
+   *
+   * - fillDown("rev")
+   *     → treat the whole table as one sequence in current row order.
+   *
+   * - fillDown("rev", { orderBy: "day" })
+   *     → same, but uses an explicit ordering to walk the rows.
+   *
+   * - fillDown("rev", { by: ["user_type"], orderBy: "day" })
+   *     → forward-fill within each group, ordered by day.
+   *
+   * NOTE:
+   *   - Does NOT drop rows.
+   *   - Does NOT change row order; sorting is done on a copy.
+   */
+  fillDown(col, { by = null, orderBy = null } = {}) {
+    if (!this._rows.length) return this;
+
+    const isNA = Pipeline._isNA;
+    const rows = this._rows;
+
+    // Build groups
+    const groups = new Map();
+
+    if (by && by.length) {
+      const byCols = Array.isArray(by) ? by : [by];
+      for (const r of rows) {
+        const key = JSON.stringify(byCols.map((k) => r[k]));
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(r);
+      }
+    } else {
+      // single global group
+      groups.set("__all__", rows.slice());
+    }
+
+    // Helper: comparator for orderBy
+    const buildComparator = (orderSpec) => {
+      const keys = Array.isArray(orderSpec) ? orderSpec : [orderSpec];
+      return (a, b) => {
+        for (let k of keys) {
+          let dir = 1;
+          if (typeof k === "string" && k.startsWith("-")) {
+            dir = -1;
+            k = k.slice(1);
+          }
+          const av = a[k];
+          const bv = b[k];
+          if (av == null && bv == null) continue;
+          if (av == null) return -1 * dir;
+          if (bv == null) return 1 * dir;
+          if (av < bv) return -1 * dir;
+          if (av > bv) return 1 * dir;
+        }
+        return 0;
+      };
+    };
+
+    for (const [, groupRows] of groups.entries()) {
+      let ordered = groupRows;
+
+      if (orderBy) {
+        // work on a sorted *copy* so we don't change row order in this._rows
+        ordered = [...groupRows].sort(buildComparator(orderBy));
+      }
+
+      let last = undefined;
+
+      for (const r of ordered) {
+        const v = r[col];
+        if (!isNA(v)) {
+          last = v;
+        } else if (isNA(v) && last !== undefined) {
+          r[col] = last;
+        }
+      }
+    }
+
+    this._pivotSpec = null;
+    // types: leave as-is; same column types
+    return this;
+  }
+
+  // ------------------------------------------------------------
+  // COLUMN ORDERING & RENAME
+  // ------------------------------------------------------------
+
+  rename(arg1, arg2) {
+    let renameMap = {};
+
+    if (typeof arg1 === "string" && typeof arg2 === "string") {
+      renameMap[arg1] = arg2;
+    } else if (typeof arg1 === "object" && arg1 !== null) {
+      renameMap = arg1;
+    } else {
+      throw new Error("rename() expects (oldName, newName) or an object map");
+    }
+
+    this._rows = this._rows.map((r) => {
+      const out = {};
+      for (const k of Object.keys(r)) {
+        out[renameMap[k] || k] = r[k];
+      }
+      return out;
+    });
+
+    // Update types if present
+    if (this._types) {
+      const newTypes = {};
+      for (const k of Object.keys(this._types)) {
+        newTypes[renameMap[k] || k] = this._types[k];
+      }
+      this._types = newTypes;
+    }
+
+    return this;
+  }
+
+  moveBefore(cols, anchor) {
+    cols = Array.isArray(cols) ? cols : [cols];
+
+    const keys = this._currentCols();
+    const without = keys.filter((k) => !cols.includes(k));
+
+    const idx = without.indexOf(anchor);
+    if (idx === -1) throw new Error(`Anchor column "${anchor}" not found`);
+
+    const newOrder = [...without.slice(0, idx), ...cols, ...without.slice(idx)];
+
+    this._reorderColumns(newOrder);
+    return this;
+  }
+
+  moveAfter(cols, anchor) {
+    cols = Array.isArray(cols) ? cols : [cols];
+
+    const keys = this._currentCols();
+    const without = keys.filter((k) => !cols.includes(k));
+
+    const idx = without.indexOf(anchor);
+    if (idx === -1) throw new Error(`Anchor column "${anchor}" not found`);
+
+    const newOrder = [
+      ...without.slice(0, idx + 1),
+      ...cols,
+      ...without.slice(idx + 1),
+    ];
+
+    this._reorderColumns(newOrder);
+    return this;
+  }
+
+  moveToFront(...cols) {
+    cols = cols.flat();
+    const keys = this._currentCols();
+    const without = keys.filter((k) => !cols.includes(k));
+
+    const newOrder = [...cols, ...without];
+    this._reorderColumns(newOrder);
+    return this;
+  }
+
+  moveToBack(...cols) {
+    cols = cols.flat();
+    const keys = this._currentCols();
+    const without = keys.filter((k) => !cols.includes(k));
+
+    const newOrder = [...without, ...cols];
+    this._reorderColumns(newOrder);
+    return this;
+  }
+
+  // ---------- INTERNAL HELPERS ----------
+
+  _currentCols() {
+    const first = this._rows[0];
+    return first ? Object.keys(first) : [];
+  }
+
+  _reorderColumns(newOrder) {
+    this._rows = this._rows.map((r) => {
+      const out = {};
+      for (const k of newOrder) out[k] = r[k];
+      return out;
+    });
+
+    if (this._types) {
+      const newTypes = {};
+      for (const k of newOrder) {
+        if (this._types[k] !== undefined) newTypes[k] = this._types[k];
+      }
+      this._types = newTypes;
+    }
+  }
+
+  // ------------------------------------------------------------
+  // SET OPERATIONS
+  // ------------------------------------------------------------
+
+  _appendKeyFn(on) {
+    if (!on) throw new Error("append()/inBoth()/onlyInA() require 'on' key(s)");
+    const keys = Array.isArray(on) ? on : [on];
+
+    return (row) => {
+      const obj = {};
+      for (const k of keys) obj[k] = row[k];
+      return JSON.stringify(obj);
+    };
+  }
+
+  /**
+   * append(other, on)
+   *  Stack rows from BOTH tables.
+   *  NOT a unique union — this is a simple vertical concat.
+   *  (If you want dedupe, you can call .distinct() after.)
+   */
+  append(other) {
+    if (!(other instanceof Pipeline)) {
+      throw new Error("append() expects another Query/Pipeline");
+    }
+    this._rows = [...this._rows, ...other._rows];
+    this._types = null; // schema changed
+    return this;
+  }
+
+  /**
+   * inBoth(other, on)
+   *  Keep rows that appear in BOTH datasets (INTERSECT by key).
+   */
+  inBoth(other, on) {
+    if (!(other instanceof Pipeline)) {
+      throw new Error("inBoth() expects another Query/Pipeline");
+    }
+
+    const keyFn = this._appendKeyFn(on);
+
+    // Hash keys from OTHER
+    const otherKeys = new Set(other._rows.map(keyFn));
+
+    // Keep only rows in BOTH
+    this._rows = this._rows.filter((r) => otherKeys.has(keyFn(r)));
+    this._types = null;
+    return this;
+  }
+
+  /**
+   * onlyInA(other, on)
+   *  Keep rows in A that do NOT appear in B (EXCEPT / A minus B).
+   */
+  onlyInA(other, on) {
+    if (!(other instanceof Pipeline)) {
+      throw new Error("onlyInA() expects another Query/Pipeline");
+    }
+
+    const keyFn = this._appendKeyFn(on);
+
+    // Hash keys from OTHER
+    const otherKeys = new Set(other._rows.map(keyFn));
+
+    // A minus B
+    this._rows = this._rows.filter((r) => !otherKeys.has(keyFn(r)));
+    this._types = null;
+    return this;
+  }
+
+  // --- TYPE CAST HELPERS ---------------------------------------
+
+  static _castToNumber(v) {
+    if (v == null || v === "") return null;
+    const n = Number(v);
+    return Number.isNaN(n) ? null : n;
+  }
+
+  static _castToBool(v) {
+    if (v == null || v === "") return null;
+    const s = String(v).trim().toLowerCase();
+    if (["true", "t", "1", "yes", "y"].includes(s)) return true;
+    if (["false", "f", "0", "no", "n"].includes(s)) return false;
+    return null; // ambiguous → null
+  }
+
+  static _castToDateISO(v) {
+    if (v == null || v === "") return null;
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString();
+  }
+
+  static _castToString(v) {
+    if (v == null || v === undefined) return "";
+    return String(v);
+  }
+
+  static _normalizeTypeToken(token) {
+    if (!token) return null;
+    const t = String(token).toLowerCase();
+    if (t === "num" || t === "number") return "num";
+    if (t === "bool" || t === "boolean") return "bool";
+    if (t === "date" || t === "datetime") return "date";
+    if (t === "cat" || t === "string" || t === "text") return "cat";
+    return t;
+  }
+
+  /**
+   * cast(col, type)  OR  cast({ col: type, ... })
+   *
+   * Example:
+   *   .cast("imp", "num")
+   *   .cast({ imp: "num", rev: "num", is_weekend: "bool" })
+   *
+   * Supported type tokens:
+   *   "num" | "number"
+   *   "bool" | "boolean"
+   *   "date" | "datetime"
+   *   "cat" | "string" | "text"
+   *
+   * NOTE:
+   *   - Changes VALUES in-place where conversion is possible.
+   *   - On failure to parse a value, sets null.
+   *   - Invalid / unknown target types → throws.
+   *   - After cast, types are re-inferred (this._types = null).
+   */
+  cast(arg1, arg2) {
+    if (!this._rows.length) return this;
+
+    let spec = {};
+
+    if (typeof arg1 === "string" && typeof arg2 === "string") {
+      spec[arg1] = arg2;
+    } else if (arg1 && typeof arg1 === "object" && arg2 == null) {
+      spec = arg1;
+    } else {
+      throw new Error(
+        "cast() expects (col, type) or an object map { col: type }"
+      );
+    }
+
+    const normalized = {};
+    for (const [col, rawType] of Object.entries(spec)) {
+      const t = Pipeline._normalizeTypeToken(rawType);
+      if (!t) {
+        throw new Error(`cast(): invalid type for column "${col}"`);
+      }
+      normalized[col] = t;
+    }
+
+    for (const r of this._rows) {
+      for (const [col, t] of Object.entries(normalized)) {
+        const v = r[col];
+        let out = v;
+
+        if (t === "num") {
+          out = Pipeline._castToNumber(v);
+        } else if (t === "bool") {
+          out = Pipeline._castToBool(v);
+        } else if (t === "date") {
+          // "best effort" date cast (parse via JS Date)
+          out = Pipeline._castToDateISO(v);
+        } else if (t === "cat") {
+          out = Pipeline._castToString(v);
+        } else {
+          throw new Error(`cast(): unsupported type "${t}"`);
+        }
+
+        r[col] = out;
+      }
+    }
+
+    // schema / logical types changed → force re-inference later
+    this._types = null;
+    return this;
+  }
+
+  /**
+   * parseDate(col, fmt)
+   *
+   * Explicit date parsing with a tiny format language.
+   *
+   * Supported fmts (via SimpleDate):
+   *   - "YYYY-MM-DD"
+   *   - "YYYY/MM/DD"
+   *   - "YYYY-MM-DD HH:mm:ss"
+   *
+   * Example:
+   *   .parseDate("day", "YYYY-MM-DD")
+   */
+  parseDate(col, fmt) {
+    if (!this._rows.length) return this;
+    if (typeof col !== "string") {
+      throw new Error("parseDate() expects a single column name string");
+    }
+    if (!fmt) {
+      throw new Error("parseDate() requires a format string");
+    }
+
+    for (const r of this._rows) {
+      const v = r[col];
+      const iso = SimpleDate.parse(v, fmt);
+      r[col] = iso;
+    }
+
+    this._types = null; // let Inference re-detect "date"
+    return this;
+  }
+
+  head(n = 5) {
+    this._rows = this._rows.slice(0, n);
+    return this;
+  }
+
+  tail(n = 5) {
+    const len = this._rows.length;
+    const start = Math.max(0, len - n);
+    this._rows = this._rows.slice(start);
+    return this;
   }
 }
 

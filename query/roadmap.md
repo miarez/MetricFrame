@@ -1,8 +1,6 @@
-## MetricFrame Core Feature Checklist
+## Query Module Core Feature Checklist
 
 ### ✅ Must-haves (Core Table Ops)
-
-relocate(is_weekend, .after = date) # move to 3rd column
 
 - [x] Load data
   - [x] `read_csv()` via `Csv.readTableSync`
@@ -55,12 +53,13 @@ relocate(is_weekend, .after = date) # move to 3rd column
   - [ ] `cast("col", "num" | "cat" | "date" | "bool")`
   - [ ] `parseDate("col", fmt)`
 - [ ] Handling missing data
-  - [ ] `dropNA(cols?)`
-  - [ ] `fillNA({ col: value | Column.*(...) })`
+  - [x] `dropNA(cols?)`
+  - [x] `fillNA({ col: value | Column.*(...) })`
+  - [x] `fillDown()` -- todo: add documentation
 - [ ] Distinct / de-duplication
   - [x] `distinct("col", ...)`
   - [x] `dedupeBy("keyCol", "orderCol")`
-- [ ] Joins
+- [x] Joins
   - [x] `leftJoin(other, on)`
   - [x] `innerJoin(other, on)`
   - [x] `rightJoin(other, on)`
@@ -70,9 +69,9 @@ relocate(is_weekend, .after = date) # move to 3rd column
   - [x] `pivot_wider({ namesFrom, valuesFrom })`
   - [x] `pivot_longer({ cols, namesTo, valuesTo })`
 - [ ] Set operations
-  - [ ] `union(other)`
-  - [ ] `intersect(other)`
-  - [ ] `except(other)` / `minus(other)`
+  - [x] `union(other)` --> just append
+  - [x] `intersect(other)` --> show only in both
+  - [x] `except(other)` / `minus(other)` --> show only in A
 - [ ] Row numbering / indexing
   - [ ] `withRowNumber("row_id")`
   - [ ] `rank("col", { dense?, desc? })`
@@ -173,9 +172,35 @@ pre-pivot long shape by using:
 This would let any wide table produced by `pivot()` be perfectly
 reversible, regardless of measure count or column depth.
 
+### 📝 Future Fill-Function Notes
+
+- [ ] Add `fillUp(col, { by?, orderBy? })`
+
+  - Equivalent to reverse → fillDown → reverse.
+  - Pure sugar; no new capability needed.
+  - Only add if ergonomics matter.
+
+- [ ] Add interpolation-based fills (optional future feature)
+
+  - `fillLinear(col, { by?, orderBy? })`
+  - Cannot be expressed via fillDown; creates new values.
+  - Only needed if Query ever supports time-series smoothing.
+
+- [ ] Add statistic-based fills (optional)
+  - `fillMean(col)`
+  - `fillMedian(col)`
+  - `fillMode(col)`
+  - Unlike fillDown, these _invent_ new values and cannot be emulated.
+
+### 🚫 Not needed (already achievable)
+
+- Directional carry behaviors (forward, backward, grouped):
+  - All reducible to ordering + `fillDown()`
+  - No correctness gaps; purely syntactic sugar.
+
 ## Possible Otherss
 
-• mutateAt
-• summariseAcross
-• complete()
-• fillMissing()
+- mutateAt()
+- summariseAcross()
+- complete()
+- relocate(is_weekend, .after = date) # move to 3rd column

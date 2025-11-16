@@ -71,16 +71,62 @@ const {
   all,
   any,
 } = Column;
+
 document.addEventListener("DOMContentLoaded", async () => {
   const base = await q.fetch_csv("./data/raw2.csv");
 
-  const stats = base
+  const casted = base
     .clone()
-    .summariseAll()
-    // .group("user_type")
-    // .stats("imp", "rev", "cost")
-    // .agg({ imp: sum("imp") })
+    .cast({
+      imp: "num",
+      rev: "num",
+      cost: "num",
+      is_weekend: "bool",
+    })
+    .parseDate("day", "YYYY-MM-DD")
     .build();
 
-  new Table(stats).build();
+  new Table(casted).build();
 });
+
+/**
+ * Render an array of { id, title, dataFrame } as tables
+ * inside #table-container.
+ *
+ * Each demo gets:
+ *  - <h3> title
+ *  - <div id="{id}"></div> where Table will render
+ */
+function renderTables(demos) {
+  const container = document.getElementById("table-container");
+  if (!container) {
+    console.error("renderTables: #table-container not found");
+    return;
+  }
+
+  // Nuke whatever was inside (<table id="table"> etc)
+  container.innerHTML = "";
+
+  demos.forEach((demo) => {
+    const { id, title, dataFrame } = demo;
+
+    // Wrapper for spacing / styling
+    const wrapper = document.createElement("div");
+    wrapper.className = "demo-table";
+
+    // Title
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    wrapper.appendChild(heading);
+
+    // Table container element
+    const tableHost = document.createElement("div");
+    tableHost.id = id;
+    wrapper.appendChild(tableHost);
+
+    container.appendChild(wrapper);
+
+    // Your Table API integrates here
+    new Table(dataFrame).container(id).build();
+  });
+}

@@ -129,16 +129,20 @@ export class Core {
   }
 
   // This should also probably be removed down the line
+  // haha this already caused a bug and casted empties as 0s
   _castNumericColumns() {
-    // Only cast if upstream told us which columns are numeric
-    const types = this.info?.types || this.profile?.types || {}; // profile is basically info anyway
-
+    const types = this.info?.types || this.profile?.types || {};
     const cols = Object.keys(types);
 
     this.rows.forEach((r) => {
       cols.forEach((col) => {
         if (types[col] === "num") {
-          const n = Number(r[col]);
+          const v = r[col];
+
+          // 🚫 don't coerce missing to 0
+          if (v === "" || v === null || v === undefined) return;
+
+          const n = Number(v);
           if (!Number.isNaN(n)) {
             r[col] = n;
           }
